@@ -1,265 +1,583 @@
 
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import matplotlib.pyplot as plt
+from pathlib import Path
 
-# Page settings
+# --------------------------------------------------
+# PAGE CONFIGURATION
+# --------------------------------------------------
+
 st.set_page_config(
     page_title="Digital Wellbeing Dashboard",
-    page_icon="📱",
+    page_icon="🌿",
     layout="wide"
 )
 
-# Load the cleaned dataset
-@st.cache_data
-def load_data():
-    data = pd.read_csv("notebooks/digital_wellbeing_cleaned.csv")
-    data["date"] = pd.to_datetime(data["date"], errors="coerce")
-    return data
-
-df = load_data()
-
-# Dashboard heading
-st.title("Personalized Digital Lifestyle and Wellbeing")
-st.write(
-    "Explore daily smartphone usage, sleep, physical activity, "
-    "and personal usage patterns."
+st.title("🌿 Personalized Digital Wellbeing Dashboard")
+st.markdown(
+    "Monitor digital habits, personalized wellbeing scores, "
+    "deviations, anomalies, and recommendations."
 )
 
-# Sidebar: user selection
-st.sidebar.header("Personalized Analysis")
+# --------------------------------------------------
+# LOAD ANALYTICS OUTPUTS
+# --------------------------------------------------
 
-users = sorted(df["user_id"].dropna().unique().tolist())
+ROOT = Path(__file__).resolve().parent
 
-if not users:
-    st.error("No user records were found in the dataset.")
+DATA_PATH = ROOT / "results" / "digital_wellbeing_scored.csv"
+DAILY_PATH = ROOT / "results" / "wellbeing_scores_daily.csv"
+SUMMARY_PATH = ROOT / "results" / "user_summary.csv"
+
+
+@st.cache_data
+def load_data():
+    if not DATA_PATH.exists():
+        raise FileNotFoundError(
+            f"Scored dataset not found: {DATA_PATH}"
+        )
+
+    data = pd.read_csv(DATA_PATH)
+
+    required_columns = [
+        "user_id",
+        "date",
+        "daily_screen_time_hours",
+        "sleep_hours",
+        "physical_activity_minutes",
+        "wellbeing_score",
+        "flagged",
+        "anomaly",
+        "main_driver",
+        "recommendation"
+    ]
+
+    missing = [
+        column for column in required_columns
+        if column not in data.columns
+    ]
+
+    if missing:
+        raise ValueError(
+            "Missing required columns: " + ", ".join(missing)
+        )
+
+    data["date"] = pd.to_datetime(data["date"], errors="coerce")
+
+    numeric_columns = [
+        "wellbeing_score",
+        "deviation",
+        "daily_screen_time_hours",
+        "social_media_hours",
+        "gaming_hours",
+        "work_study_hours",
+        "sleep_hours",
+        "notifications_per_day",
+        "app_opens_per_day",
+        "physical_activity_minutes",
+        "flagged",
+        "anomaly"
+    ]
+
+    for column in numeric_columns:
+        if column in data.columns:
+            data[column] = pd.to_numeric(
+                data[column], errors="coerce"
+            )
+
+    data["flagged"] = data["flagged"].fillna(0).astype(int)
+    data["anomaly"] = data["anomaly"].fillna(0).astype(int)
+
+    # Add personal baselines from the detailed analytics output.
+    if DAILY_PATH.exists():
+        daily = pd.read_csv(DAILY_PATH)
+
+        baseline_columns = [
+            "record_id",
+            "daily_screen_time_hours_base",
+            "sleep_hours_base",
+            "physical_activity_minutes_base",
+            "notifications_per_day_base"
+        ]
+
+        available = [
+            column for column in baseline_columns
+            if column in daily.columns
+        ]
+
+        if "record_id" in data.columns and "record_id" in available:
+            baseline_data = daily[available].drop_duplicates(
+                subset=["record_id"]
+            )
+
+            data = data.merge(
+                baseline_data,
+                on="record_id",
+                how="left",
+                suffixes=("", "_baseline")
+            )
+
+    return data
+
+
+try:
+    df = load_data()
+except Exception as error:
+    st.error(f"Could not load analytics data: {error}")
+    st.info(
+        "Run the analytics notebook script first to generate "
+        "the required files in the results folder."
+    )
     st.stop()
+
+df = df.dropna(subset=["user_id", "date"]).copy()
+
+if df.empty:
+    st.error("The dataset contains no valid user/date records.")
+    st.stop()
+
+# --------------------------------------------------
+# SIDEBAR FILTERS
+# --------------------------------------------------
+
+st.sidebar.header("Dashboard Filters")
+
+users = sorted(df["user_id"].astype(str).unique().tolist())
 
 selected_user = st.sidebar.selectbox(
     "Select User",
     users
 )
 
-user_df = df[df["user_id"] == selected_user].copy()
-user_df = user_df.sort_values("date")
+user_data = df[df["user_id"].astype(str) == selected_user].copy()
 
-if user_df.empty:
-    st.warning("No records are available for this user.")
+available_years = sorted(
+    user_data["date"].dt.year.dropna().unique().tolist()
+)
+
+if not available_years:
+    st.error("No valid dates are available for this user.")
     st.stop()
 
-# Summary cards
-st.header("Your Digital Lifestyle Overview")
+selected_year = st.sidebar.selectbox(
+    "Select Year",
+    available_years,
+    index=len(available_years) - 1
+)
 
-col1, col2, col3, col4 = st.columns(4)
+year_data = user_data[
+    user_data["date"].dt.year == selected_year
+].copy()
 
-col1.metric("Total Daily Records", f"{len(user_df):,}")
+available_months = sorted(
+    year_data["date"].dt.month.dropna().unique().tolist()
+)
 
-col2.metric(
+month_names = {
+    1: "January", 2: "February", 3: "March",
+    4: "April", 5: "May", 6: "June",
+    7: "July", 8: "August", 9: "September",
+    10: "October", 11: "November", 12: "December"
+}
+
+month_options = {
+    month_names[int(month)]: int(month)
+    for month in available_months
+}
+
+selected_month_name = st.sidebar.selectbox(
+    "Select Month",
+    list(month_options.keys())
+)
+
+selected_month = month_options[selected_month_name]
+
+filtered = year_data[
+    year_data["date"].dt.month == selected_month
+].sort_values("date").copy()
+
+st.sidebar.caption(
+    "Scores and flags are generated by the analytics notebook."
+)
+
+# --------------------------------------------------
+# KEY METRICS
+# --------------------------------------------------
+
+st.subheader(f"Overview — {selected_user}")
+
+avg_score = filtered["wellbeing_score"].mean()
+latest_score = (
+    filtered.sort_values("date")["wellbeing_score"].iloc[-1]
+    if not filtered.empty else float("nan")
+)
+
+avg_screen = filtered["daily_screen_time_hours"].mean()
+avg_sleep = filtered["sleep_hours"].mean()
+
+flagged_days = int(filtered["flagged"].sum())
+anomaly_days = int(filtered["anomaly"].sum())
+
+c1, c2, c3, c4, c5 = st.columns(5)
+
+c1.metric(
+    "Average Wellbeing Score",
+    f"{avg_score:.1f}" if pd.notna(avg_score) else "N/A"
+)
+
+c2.metric(
+    "Latest Wellbeing Score",
+    f"{latest_score:.1f}" if pd.notna(latest_score) else "N/A"
+)
+
+c3.metric(
     "Average Screen Time",
-    f"{user_df['daily_screen_time_hours'].mean():.2f} hours"
+    f"{avg_screen:.1f} h" if pd.notna(avg_screen) else "N/A"
 )
 
-col3.metric(
+c4.metric(
     "Average Sleep",
-    f"{user_df['sleep_hours'].mean():.2f} hours"
+    f"{avg_sleep:.1f} h" if pd.notna(avg_sleep) else "N/A"
 )
 
-col4.metric(
-    "Average Physical Activity",
-    f"{user_df['physical_activity_minutes'].mean():.0f} min/day"
+c5.metric("Flagged Days", flagged_days)
+
+st.caption(f"Anomalous days in the selected month: {anomaly_days}")
+
+if filtered.empty:
+    st.warning("No records are available for this month.")
+    st.stop()
+
+# --------------------------------------------------
+# WELLBEING SCORE TREND
+# --------------------------------------------------
+
+st.subheader("📈 Wellbeing Score Trend")
+
+fig, ax = plt.subplots(figsize=(12, 4))
+
+ax.plot(
+    filtered["date"],
+    filtered["wellbeing_score"],
+    marker="o",
+    label="Wellbeing Score"
 )
 
-st.divider()
-
-# Screen-time trend
-st.subheader("1. Daily Screen-Time Trend")
-
-fig1 = px.line(
-    user_df,
-    x="date",
-    y="daily_screen_time_hours",
-    markers=True,
-    title="Daily Screen Time",
-    labels={
-        "date": "Date",
-        "daily_screen_time_hours": "Screen Time (hours)"
-    }
+ax.axhline(
+    70,
+    linestyle="--",
+    label="Personal Typical Level (70)"
 )
 
-st.plotly_chart(fig1, use_container_width=True)
+flagged_data = filtered[filtered["flagged"] == 1]
 
-# Screen time and sleep relationship
-st.subheader("2. Screen Time vs Sleep")
+if not flagged_data.empty:
+    ax.scatter(
+        flagged_data["date"],
+        flagged_data["wellbeing_score"],
+        marker="x",
+        s=90,
+        label="Sustained Deviation"
+    )
 
-fig2 = px.scatter(
-    user_df,
-    x="daily_screen_time_hours",
-    y="sleep_hours",
-    hover_data=["date", "day_of_week"],
-    title="Daily Screen Time and Sleep Duration",
-    labels={
-        "daily_screen_time_hours": "Screen Time (hours)",
-        "sleep_hours": "Sleep (hours)"
-    }
+ax.set_xlabel("Date")
+ax.set_ylabel("Wellbeing Score")
+ax.set_ylim(0, 100)
+ax.grid(True, alpha=0.3)
+ax.legend()
+fig.autofmt_xdate()
+fig.tight_layout()
+
+st.pyplot(fig)
+plt.close(fig)
+
+st.caption(
+    "The model defines 70 as typical for the user's own recent pattern. "
+    "This is a personalized indicator, not a clinical assessment."
 )
 
-st.plotly_chart(fig2, use_container_width=True)
+# --------------------------------------------------
+# DIGITAL HABITS
+# --------------------------------------------------
 
-# Daily activity comparison
-st.subheader("3. Screen-Time Activity Breakdown")
+st.subheader("📱 Digital Habits")
 
-activity_columns = [
-    "social_media_hours",
-    "gaming_hours",
-    "work_study_hours"
+habit_columns = [
+    ("daily_screen_time_hours", "Daily Screen Time (hours)"),
+    ("social_media_hours", "Social Media (hours)"),
+    ("gaming_hours", "Gaming (hours)"),
+    ("work_study_hours", "Work / Study (hours)"),
+    ("sleep_hours", "Sleep (hours)"),
+    ("notifications_per_day", "Notifications per Day"),
+    ("app_opens_per_day", "App Opens per Day"),
+    ("physical_activity_minutes", "Physical Activity (minutes)")
 ]
 
-activity_data = user_df[activity_columns].mean().reset_index()
-activity_data.columns = ["Activity", "Average Hours"]
+available_habits = [
+    (column, label)
+    for column, label in habit_columns
+    if column in filtered.columns
+    and filtered[column].notna().any()
+]
 
-activity_data["Activity"] = activity_data["Activity"].map({
-    "social_media_hours": "Social Media",
-    "gaming_hours": "Gaming",
-    "work_study_hours": "Work / Study"
-})
-
-fig3 = px.bar(
-    activity_data,
-    x="Activity",
-    y="Average Hours",
-    color="Activity",
-    title="Average Daily Time by Activity"
-)
-
-st.plotly_chart(fig3, use_container_width=True)
-
-# Sleep and physical activity trends
-st.subheader("4. Sleep and Physical Activity")
-
-sleep_activity = user_df[
-    ["date", "sleep_hours", "physical_activity_minutes"]
-].melt(
-    id_vars="date",
-    var_name="Measurement",
-    value_name="Value"
-)
-
-sleep_activity["Measurement"] = sleep_activity["Measurement"].map({
-    "sleep_hours": "Sleep (hours)",
-    "physical_activity_minutes": "Physical Activity (minutes)"
-})
-
-fig4 = px.line(
-    sleep_activity,
-    x="date",
-    y="Value",
-    color="Measurement",
-    markers=True,
-    title="Daily Sleep and Physical Activity"
-)
-
-st.plotly_chart(fig4, use_container_width=True)
-
-# Notifications and app openings
-st.subheader("5. Digital Interaction Patterns")
-
-interaction_data = user_df[
-    ["date", "notifications_per_day", "app_opens_per_day"]
-].melt(
-    id_vars="date",
-    var_name="Interaction",
-    value_name="Count"
-)
-
-interaction_data["Interaction"] = interaction_data["Interaction"].map({
-    "notifications_per_day": "Notifications",
-    "app_opens_per_day": "App Opens"
-})
-
-fig5 = px.line(
-    interaction_data,
-    x="date",
-    y="Count",
-    color="Interaction",
-    markers=True,
-    title="Daily Notifications and App Opens"
-)
-
-st.plotly_chart(fig5, use_container_width=True)
-
-# Personalized baseline comparison
-st.subheader("6. Personal Usage Pattern")
-
-average_screen = user_df["daily_screen_time_hours"].mean()
-average_sleep = user_df["sleep_hours"].mean()
-
-latest_record = user_df.dropna(subset=["date"]).sort_values("date")
-
-if not latest_record.empty:
-    latest = latest_record.iloc[-1]
-
-    st.write(f"**Selected user:** {selected_user}")
-    st.write(f"**Latest recorded date:** {latest['date'].strftime('%d %b %Y')}")
-
-    screen_difference = (
-        latest["daily_screen_time_hours"] - average_screen
-    )
-    sleep_difference = latest["sleep_hours"] - average_sleep
-
-    col1, col2 = st.columns(2)
-
-    col1.metric(
-        "Latest Screen Time",
-        f"{latest['daily_screen_time_hours']:.2f} hours",
-        delta=f"{screen_difference:+.2f} hours vs personal average",
-        delta_color="inverse"
+if available_habits:
+    chosen_habit_label = st.selectbox(
+        "Choose a habit to view",
+        [label for _, label in available_habits]
     )
 
-    col2.metric(
-        "Latest Sleep",
-        f"{latest['sleep_hours']:.2f} hours",
-        delta=f"{sleep_difference:+.2f} hours vs personal average"
+    chosen_habit = next(
+        column for column, label in available_habits
+        if label == chosen_habit_label
     )
 
-    st.caption(
-        "These comparisons use the selected user's average across the "
-        "available records. They describe personal patterns and are not "
-        "medical diagnoses or validated wellbeing risk scores."
+    fig, ax = plt.subplots(figsize=(12, 4))
+
+    ax.plot(
+        filtered["date"],
+        filtered[chosen_habit],
+        marker="o",
+        label=chosen_habit_label
     )
 
-# Display daily records
-st.subheader("7. Daily Usage Records")
+    baseline_column = chosen_habit + "_base"
 
-display_columns = [
-    "date",
-    "day_of_week",
-    "daily_screen_time_hours",
-    "social_media_hours",
-    "gaming_hours",
-    "work_study_hours",
-    "sleep_hours",
-    "notifications_per_day",
-    "app_opens_per_day",
-    "physical_activity_minutes"
+    if (
+        baseline_column in filtered.columns
+        and filtered[baseline_column].notna().any()
+    ):
+        ax.plot(
+            filtered["date"],
+            filtered[baseline_column],
+            linestyle="--",
+            label="Personal Baseline"
+        )
+
+    ax.set_xlabel("Date")
+    ax.set_ylabel(chosen_habit_label)
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    fig.autofmt_xdate()
+    fig.tight_layout()
+
+    st.pyplot(fig)
+    plt.close(fig)
+
+# --------------------------------------------------
+# DEVIATION AND ANOMALY DETAILS
+# --------------------------------------------------
+
+st.subheader("⚠️ Deviation and Anomaly Detection")
+
+left, right = st.columns(2)
+
+with left:
+    st.markdown("**Sustained Deviations**")
+    st.write(
+        "Days flagged by the notebook's rule for a negative "
+        "deviation lasting at least three consecutive days."
+    )
+
+    flagged_rows = filtered[filtered["flagged"] == 1]
+
+    if flagged_rows.empty:
+        st.success("No sustained deviations were flagged this month.")
+    else:
+        display_columns = [
+            column for column in [
+                "date",
+                "wellbeing_score",
+                "main_driver",
+                "recommendation"
+            ]
+            if column in flagged_rows.columns
+        ]
+
+        st.dataframe(
+            flagged_rows[display_columns].sort_values("date"),
+            use_container_width=True,
+            hide_index=True
+        )
+
+with right:
+    st.markdown("**Unusual Behaviour (Isolation Forest)**")
+    st.write(
+        "Anomalies are unusual combinations of behavioural factors "
+        "detected by the Isolation Forest model."
+    )
+
+    anomaly_rows = filtered[filtered["anomaly"] == 1]
+
+    if anomaly_rows.empty:
+        st.info("No anomalies were detected this month.")
+    else:
+        display_columns = [
+            column for column in [
+                "date",
+                "wellbeing_score",
+                "main_driver",
+                "recommendation"
+            ]
+            if column in anomaly_rows.columns
+        ]
+
+        st.dataframe(
+            anomaly_rows[display_columns].sort_values("date"),
+            use_container_width=True,
+            hide_index=True
+        )
+
+# --------------------------------------------------
+# PERSONALIZED RECOMMENDATIONS
+# --------------------------------------------------
+
+st.subheader("💡 Personalized Recommendations")
+
+latest_record = filtered.sort_values("date").iloc[-1]
+
+st.markdown("**Latest recommendation**")
+
+latest_recommendation = latest_record.get(
+    "recommendation",
+    "No recommendation available."
+)
+
+if pd.isna(latest_recommendation) or not str(latest_recommendation).strip():
+    latest_recommendation = "No recommendation available."
+
+st.info(str(latest_recommendation))
+
+st.markdown("**Recommendations for flagged days**")
+
+recommendation_rows = filtered[
+    (filtered["flagged"] == 1)
+    | (filtered["anomaly"] == 1)
+]
+
+if recommendation_rows.empty:
+    st.write(
+        "No flagged or anomalous days were found for this month. "
+        "Continue monitoring your usual patterns."
+    )
+else:
+    for _, row in recommendation_rows.sort_values("date").iterrows():
+        date_label = row["date"].strftime("%d %b %Y")
+
+        with st.expander(f"{date_label} — Review behaviour"):
+            st.write(
+                f"Wellbeing score: {row['wellbeing_score']:.1f}"
+                if pd.notna(row["wellbeing_score"])
+                else "Wellbeing score: N/A"
+            )
+
+            if "main_driver" in row.index and pd.notna(row["main_driver"]):
+                st.write(f"Main factor: {row['main_driver']}")
+
+            st.write(str(row.get("recommendation", "No recommendation available.")))
+
+            if row["flagged"] == 1:
+                st.warning("Sustained deviation flag")
+
+            if row["anomaly"] == 1:
+                st.warning("Unusual behaviour detected")
+
+# --------------------------------------------------
+# FACTOR SUMMARY
+# --------------------------------------------------
+
+st.subheader("📊 Average Lifestyle Factors")
+
+factor_columns = [
+    column for column, _ in habit_columns
+    if column in filtered.columns
+    and filtered[column].notna().any()
+]
+
+if factor_columns:
+    factor_summary = (
+        filtered[factor_columns]
+        .mean()
+        .round(2)
+        .rename("Monthly Average")
+        .reset_index()
+        .rename(columns={"index": "Lifestyle Factor"})
+    )
+
+    st.dataframe(
+        factor_summary,
+        use_container_width=True,
+        hide_index=True
+    )
+
+# --------------------------------------------------
+# DAILY DATA TABLE
+# --------------------------------------------------
+
+st.subheader("📋 Daily Records")
+
+table_columns = [
+    column for column in [
+        "date",
+        "wellbeing_score",
+        "deviation",
+        "daily_screen_time_hours",
+        "sleep_hours",
+        "physical_activity_minutes",
+        "flagged",
+        "anomaly",
+        "main_driver",
+        "recommendation"
+    ]
+    if column in filtered.columns
 ]
 
 st.dataframe(
-    user_df[display_columns],
+    filtered[table_columns].sort_values("date", ascending=False),
     use_container_width=True,
     hide_index=True
 )
 
-# Download selected user's records
-csv_data = user_df.to_csv(index=False).encode("utf-8")
+# --------------------------------------------------
+# DOWNLOAD FILTERED DATA
+# --------------------------------------------------
+
+st.subheader("⬇️ Download Report")
+
+download_data = filtered.copy()
+download_data["date"] = download_data["date"].dt.strftime("%Y-%m-%d")
 
 st.download_button(
-    label="Download This User's Data",
-    data=csv_data,
-    file_name=f"{selected_user}_digital_wellbeing.csv",
+    label="Download Monthly CSV Report",
+    data=download_data.to_csv(index=False).encode("utf-8"),
+    file_name=f"{selected_user}_{selected_year}_{selected_month:02d}_wellbeing_report.csv",
     mime="text/csv"
 )
 
+# --------------------------------------------------
+# MODEL SUMMARY
+# --------------------------------------------------
+
+with st.expander("About the analytics model"):
+    st.markdown(
+        """
+        - **Personal baseline:** compares each user with their own previous
+          seven days, requiring at least five earlier days.
+        - **Wellbeing score:** calculated from deviations in screen time,
+          sleep, physical activity and notifications, using the team's
+          chosen weights.
+        - **Sustained deviation:** flags negative deviations lasting at
+          least three consecutive days.
+        - **Anomaly detection:** uses Isolation Forest to identify unusual
+          behavioural patterns.
+        - **Recommendations:** identifies the main factor affecting the
+          score and provides an explanation.
+        - **Limitations:** the dataset is synthetic, covers 30 days per
+          user, and is processed in batches. Real-time processing is
+          future scope. Stress and mood are not currently in the dataset.
+        """
+    )
+
 st.caption(
-    "Dashboard based on the group's cleaned daily usage dataset. "
-    "Patterns are descriptive and should not be interpreted as medical advice."
+    "Personalized Digital Lifestyle and Well-being Intelligence System"
 )
