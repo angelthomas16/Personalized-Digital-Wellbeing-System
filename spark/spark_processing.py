@@ -16,8 +16,7 @@ def main():
 
     spark.sparkContext.setLogLevel("WARN")
     
-    input_path = r"C:\Users\Arsha\Documents\Personalized-Digital-Wellbeing-System\notebooks\digital_wellbeing_cleaned.csv"
-
+    input_path = "/mnt/c/Users/Arsha/Documents/Personalized-Digital-Wellbeing-System/notebooks/digital_wellbeing_cleaned.csv"
     output_path = r"C:\Users\Arsha\Documents\spark_output"
 
     # 2. Read the cleaned dataset
